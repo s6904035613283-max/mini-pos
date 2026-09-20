@@ -3,66 +3,31 @@
 import { useEffect, useState } from "react";
 import { supabase } from "../../lib/supabaseClient";
 
-// ---- Telegram Config (อ่านจาก Environment Variables) ----
-const TELEGRAM_BOT_TOKEN = process.env.NEXT_PUBLIC_TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.NEXT_PUBLIC_TELEGRAM_CHAT_ID;
-const LOW_STOCK_THRESHOLD = 5; // เกณฑ์แจ้งเตือนสต๊อกเหลือน้อย
+const LOW_STOCK_THRESHOLD = 5; // ใช้แสดงผล/อ้างอิงฝั่ง client เท่านั้น (เกณฑ์จริงตัดสินใจที่ route)
 
-// ส่งข้อความแจ้งเตือนไปยัง Telegram
+// เรียก API Route ฝั่ง server เพื่อส่งแจ้งเตือน Telegram
 // ทำงานแบบ async/try-catch แยกต่างหาก ไม่ทำให้ flow การขายพัง ถ้ายิงไม่สำเร็จ
-async function sendTelegramMessage(text) {
-  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("Telegram config ไม่ครบ (BOT_TOKEN / CHAT_ID) - ข้ามการแจ้งเตือน");
-    return;
-  }
-
+async function notifyTelegram(orderData) {
   try {
-    const url = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
-    const res = await fetch(url, {
+    const res = await fetch("/api/notify-telegram", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: TELEGRAM_CHAT_ID,
-        text: text,
-        parse_mode: "HTML",
-      }),
+      body: JSON.stringify(orderData),
     });
 
     if (!res.ok) {
-      const errBody = await res.text();
-      console.error("Telegram API error:", res.status, errBody);
+      console.error("notify-telegram route ตอบกลับ error:", res.status);
+      return;
+    }
+
+    const data = await res.json();
+    if (!data.ok) {
+      console.error("ส่ง Telegram แจ้งเตือนไม่สำเร็จ:", data.error || data.reason);
     }
   } catch (err) {
     // จับ error ไว้เฉยๆ ไม่ throw ต่อ เพื่อไม่ให้กระทบระบบขาย
-    console.error("ส่ง Telegram แจ้งเตือนไม่สำเร็จ:", err);
+    console.error("เรียก notify-telegram route ไม่สำเร็จ:", err);
   }
-}
-
-// สร้างข้อความแจ้งเตือน "มีรายการขายใหม่"
-function buildNewOrderMessage({ productName, quantity, totalPrice, stockAfter, unit }) {
-  const timeStr = new Date().toLocaleString("th-TH", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
-
-  return (
-    `🛍️ <b>มีรายการขายใหม่!</b>\n` +
-    `- สินค้า: ${productName}\n` +
-    `- จำนวน: ${quantity} ${unit || "ชิ้น"}\n` +
-    `- ราคารวม: ${totalPrice.toFixed(2)} บาท\n` +
-    `- สต๊อกคงเหลือปัจจุบัน: ${stockAfter} ชิ้น\n` +
-    `- เวลา: ${timeStr}`
-  );
-}
-
-// สร้างข้อความแจ้งเตือน "สต๊อกใกล้หมด"
-function buildLowStockMessage({ productName, stockAfter }) {
-  return (
-    `🚨 <b>[เตือนภัย] สต๊อกสินค้าใกล้หมด!</b>\n` +
-    `- สินค้า: ${productName}\n` +
-    `- คงเหลือเพียง: ${stockAfter} ชิ้น\n` +
-    `⚠️ กรุณาเติมสต๊อกสินค้าด่วน!`
-  );
 }
 
 export default function SellPage() {
@@ -170,22 +135,15 @@ export default function SellPage() {
       return;
     }
 
-    // ---- 3. แจ้งเตือน Telegram (ไม่บล็อก flow การขาย ถ้า error ก็ปล่อยผ่าน) ----
-    const notifyPayload = {
+    // 3. แจ้งเตือน Telegram ผ่าน API Route ฝั่ง server
+    //    ส่งแค่ข้อมูล order ดิบ ไม่ await ให้บล็อก UI หลัก และ ignore error ใดๆ ที่เกิดขึ้น
+    notifyTelegram({
       productName: selectedProduct.name,
       quantity: qtyNumber,
       totalPrice: totalPrice,
       stockAfter: newStock,
       unit: selectedProduct.unit,
-    };
-
-    // งานที่ 1: แจ้งเตือนรายการขายใหม่ (ยิงแบบ async ไม่ await ให้บล็อก UI หลัก)
-    sendTelegramMessage(buildNewOrderMessage(notifyPayload));
-
-    // งานที่ 2: ถ้าสต๊อกหลังตัด <= เกณฑ์ ให้ยิงข้อความเตือนภัยแยกอีกก้อน
-    if (newStock <= LOW_STOCK_THRESHOLD) {
-      sendTelegramMessage(buildLowStockMessage(notifyPayload));
-    }
+    });
 
     // สำเร็จ: แจ้งเตือน รีเซ็ตฟอร์ม และรีเฟรชรายการสินค้า
     setSuccess(
